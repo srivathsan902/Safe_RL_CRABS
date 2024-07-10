@@ -1,0 +1,7 @@
+__pycache__/
+artifacts/
+safety-gymnasium/
+*/safety-gymnasium/
+function_timer.py
+wandb/
+.env

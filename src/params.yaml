@@ -1,0 +1,30 @@
+base:
+  wandb_enabled: False
+main:
+  update: False
+  update_from: "artifacts/2024/07/01/Run_3/20"
+  env_id: 'SafetyPointCircle1-v0'
+  render_mode: None
+
+  agent:
+    name: "DDPG"
+    agent_config:
+      hidden_size_1: 64
+      hidden_size_2: 128
+      priority_replay: True
+
+train:
+  num_episodes: 10
+  batch_size: 64
+  max_steps_per_episode: 250
+  save_every: 250
+
+test:
+  models_dir: "artifacts/2024/07/01/Run_1"
+  model_nums: [2000]
+  num_runs: 5
+  render_mode: 'human'
+  max_steps_per_episode: 500
+
+
+
