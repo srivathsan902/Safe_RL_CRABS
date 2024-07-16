@@ -3,7 +3,6 @@ import numpy as np
 import os
 
 import wandb
-from safetyPolicy import select_safe_action
 
 
 def train(env, agent, dir_name, params, start_episode = 0):
@@ -20,14 +19,17 @@ def train(env, agent, dir_name, params, start_episode = 0):
         low = env.observation_space.low
         high = env.observation_space.high
 
-        low = np.clip(low, -1000, 1000)
-        high = np.clip(high, -1000, 1000)
-        agent.barrier_certificate._set_env_properties(state, state_dim, low, high)
+        low = np.clip(low, -6, 6)
+        high = np.clip(high, -6, 6)
+        env_specs = {'initial_state' : state, 'state_space_low': low, 'state_space_high': high}
+        agent.barrier_certificate.set_env_specs(env_specs)
         agent.ou_noise.reset()
         episode_reward = 0
         episode_cost = 0
         num_safe_actions = 0
         for t in range(max_steps_per_episode):
+            pos = env.task.agent.pos
+            agent.barrier_certificate.current_pos(pos)
             # print('Episode:', episode, 'Step:', t, end= "\r")
             action = agent.select_action(np.array(state))
             next_state, reward, cost, done, truncated, _ = env.step(action)
@@ -43,14 +45,16 @@ def train(env, agent, dir_name, params, start_episode = 0):
             episode_reward += reward
             episode_cost += cost
 
-            if agent.replay_buffer.size > batch_size:
-                agent.train(batch_size)
+            # if agent.replay_buffer.size > 64:
+            #     agent.train()
 
             if done or truncated:
                 break
 
         # os.system('cls' if os.name == 'nt' else 'clear')
-
+        agent.train_dynamics()
+        # if agent.replay_buffer.size > 64:
+        agent.train()
         if (episode + 1) % SAVE_EVERY == 0:
             agent.save(os.path.join(dir_name , f'{episode + 1}'))
 

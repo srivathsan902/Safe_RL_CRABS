@@ -1,4 +1,7 @@
 import torch
+import numpy as np
+from utils import get_coords
+
 def isStateSafe(state):
     """
     Here comes the human input.
@@ -9,17 +12,21 @@ def isStateSafe(state):
     
     """
     # print('in safestates: ',state.shape)
-    if len(state.shape) == 2:
-        second_feature = state[:, 1]
-    else:
-        second_feature = state[:,:,1]
+    max_lidar_distance = 6
+    lidar_resolution = 16
+    states = state.detach().numpy()
+    print('state', state.shape)
+    x,y,theta_local,info_lidar = get_coords(states, max_lidar_distance, lidar_resolution)
 
-    expanded_second_feature = second_feature.unsqueeze(-1) if len(state.shape) == 3 else second_feature
+    print('x', x.shape)
+    
+    mask = abs(x) >= 1.125
 
-    # Check if the 2nd feature is less than 0.5
-    safety_tensor = torch.where(expanded_second_feature < 0.5, torch.tensor(0.05), torch.tensor(1.05))
-    # safety_tensor = torch.where(second_feature < 0.5, 0.05, 1.05)
-    # print('safety_tensor: ', safety_tensor.shape)
-    return safety_tensor
+    is_state_safe = torch.full_like(state[:,0], 0.05)
+    is_state_safe[mask] = 1.05
+
+    # if len(is_state_safe.shape) == 1:
+    #     return is_state_safe.unsqueeze(1)
+    return is_state_safe
 
 

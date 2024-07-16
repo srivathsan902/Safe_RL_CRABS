@@ -9,7 +9,8 @@ import safety_gymnasium
 from dotenv import load_dotenv
 
 from train import train
-from ddpgAgent import DDPGAgent
+# from ddpgAgent import DDPGAgent
+from CRABS import CRABS
 
 load_dotenv()
 
@@ -32,10 +33,8 @@ def main(dir_name, params):
 
     hidden_size_1 = params['main']['agent'].get('hidden_size_1', 64)
     hidden_size_2 = params['main'].get('hidden_size_2', 128)
-    priority_replay = params['main'].get('priority_replay', True)
 
-    agent = DDPGAgent(state_dim, action_dim, max_action, min_action, hidden_size_1 = hidden_size_1, hidden_size_2 = hidden_size_2, priority_replay = priority_replay)
-
+    agent = CRABS(state_dim, action_dim, min_action, max_action, hidden_size_1 = hidden_size_1, hidden_size_2 = hidden_size_2)
 
     wandb_enabled = params['base']['wandb_enabled']
 
@@ -54,9 +53,7 @@ def main(dir_name, params):
             'render_mode': render_mode,
             'hidden_size_1': hidden_size_1,
             'hidden_size_2': hidden_size_2,
-            'priority_replay': priority_replay,
             'run_name': f'{env_id}-{run_name}',
-            'batch_size': params['train']['batch_size'],
             'save_every': params['train']['save_every'],
         }
 

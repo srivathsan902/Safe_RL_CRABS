@@ -5,121 +5,160 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-
-def select_safe_action(env, agent_action):
-    '''
-    Select an action that does not have a cost.
-    To do so, select random actions till an 
-    action with zero cost is selected.
-
-    Action space is continuous, so not
-    possible to use action_space.sample()
-    '''
-    agent_action_safe = True
-    safe_actions = []
-
-    max_try = 100
-    try_num = 0
-
-    for _ in range(10):
-        cost = 1
-        while cost > 0:
-            if try_num >= max_try:
-                break
-            try_num += 1
-            copy_env = copy.deepcopy(env)
-
-            if agent_action_safe:
-                next_state, reward, cost, done, truncated, _ = copy_env.step(agent_action)
-                if cost == 0:
-                    copy_env.close()
-                    del copy_env
-                    return agent_action, True
-                agent_action_safe = False
-
-            else:
-                action = copy_env.action_space.sample()
-                next_state, reward, cost, done, truncated, _ = copy_env.step(action)
-                copy_env.close()
-                del copy_env
-        safe_actions.append(action)
+from utils import get_coords
+# def scale_angle(angle):
+#     '''Scales the Angles between 0 and 360, Input must be in degrees'''
     
+#     angle_scaled = angle%360
 
-    '''
-    Choose the safe action that has least KL divergence with the agent action
-    '''
-    if len(safe_actions) == 0:
-        return agent_action, False
-    else:
-        safe_actions = np.array(safe_actions)
-        kl_divergence = np.sum(np.abs(safe_actions - agent_action), axis=1)
-        safe_action = safe_actions[np.argmin(kl_divergence)]
+#     if angle_scaled<0:
+#         angle_scaled+=360
+    
+#     return angle_scaled
 
-        return safe_action, True
+# def get_x_vals(x_indices,lidar_resolution):
+#     '''Returns in Degrees'''
 
-def generate_random_states_uniform(env, low, high, num_samples=10):
-    states = np.random.uniform(low, high, size=(num_samples, state_dim))
-    return states
+#     index_to_angle_factor = 360/lidar_resolution
+#     x_vals = x_indices*index_to_angle_factor
+
+#     # Handling the Case where there is a jump
+#     # if len(x_indices)==0:
+#     #     print(x_indices)
+#     if max(x_indices)-min(x_indices)==2:
+#         pass
+
+#     else:
+#         if 1 in x_indices:
+#             x_vals[0:2] += 360
+#         else:
+#             x_vals[0] += 360
+
+#     return x_vals
+
+# def get_lidar_r_theta(lidar_values,lidar_resolution,max_lidar_distance):
+#     '''
+#     The lidar values are processed and location of the center of the circle is returned from agent's frame of reference
+    
+#     Returns
+#         theta_lidar_rad, r: Position of the Circle Centre wrt agent
+#         info_lidar: Has info if the agent is within or out of limits
+#     '''
+#     x_indices = np.where(lidar_values>0)[0]
+#     if len(x_indices)>3:
+#         raise
+#         # We assumed that the lidar generates only 3 non-zero values, get_x_vals() uses this assumption
+
+#     if len(x_indices)>0:
+#         y_vals = lidar_values[x_indices]
+#         x_vals = get_x_vals(x_indices,lidar_resolution)
+
+#         a,b,c = np.polyfit(x_vals,y_vals,2)
+#         theta_lidar = (-b/(2*a)) # Its in degrees
+#         lidar_max = c - b**2/(4*a)
+#         r = (1-lidar_max)*max_lidar_distance
+
+#         theta_lidar = scale_angle(theta_lidar)+180/lidar_resolution
+#         info_lidar = {'x_vals':x_vals,'y_vals':y_vals,'within_limits':True}
+
+#     else:
+#         theta_lidar = -1
+#         r = max_lidar_distance
+#         info_lidar = {'x_vals':-1,'y_vals':-1,'within_limits':False}
+
+#     theta_lidar_rad = theta_lidar*np.pi/180
+#     return theta_lidar_rad,r,info_lidar
+
+# def get_coords(observations,max_lidar_distance,lidar_resolution):
+#     '''Processes the 16-dim observation vector and return (x,y,theta) coordinates of the agent
+#     by using the magnetometer for orientation and lidar for distance and angle from the origin
+#     '''
+#     all_x = []
+#     all_y = []
+#     all_theta_local = []
+#     all_info_lidar = []
+
+#     # Processing the State
+#     for obs in observations:
+#         print('obs', obs.shape)
+#         lidar_values = obs[-16:]
+#         mag0 = obs[9]
+#         mag1 = obs[10]
+#         theta_local = np.arctan2(mag0,mag1)
+#         # theta_lidar = (np.argmax(lidar_values)+1)*2*np.pi/lidar_resolution
+#         theta_lidar,r,info_lidar = get_lidar_r_theta(lidar_values,lidar_resolution,max_lidar_distance)
+        
+#         if info_lidar['within_limits']==False:
+#             # print("Agent OUTSIDE LIMITS")
+#             return -1,-1,-1,info_lidar
+
+#         r = (1-max(lidar_values))*max_lidar_distance
+
+#         theta_bot = theta_lidar+theta_local+np.pi
+#         theta_bot_scaled = scale_angle(theta_bot*180/np.pi)*np.pi/180 #This is to bring it back to [0,2pi]
+
+#         x,y = r*np.cos(theta_bot_scaled),r*np.sin(theta_bot_scaled)
+#         # print("X Vals: {} | Y vals : {} | Theta Lidar: {:.2f} | Theta Local: {:.2f} | theta_bot_scaled :{:.2f} ".format(np.round(info_lidar['x_vals'],2),np.round(info_lidar['y_vals'],2),theta_lidar*180/np.pi,theta_local*180/np.pi,theta_bot_scaled*180/np.pi))
+#         all_x.append(x)
+#         all_y.append(y)
+#         all_theta_local.append(theta_local)
+#         all_info_lidar.append(info_lidar)
+
+#     all_x = torch.tensor(all_x).float()
+#     all_y = torch.tensor(all_y).float()
+#     all_theta_local = torch.tensor(all_theta_local)
+
+#     # return x,y,theta_local,info_lidar
+#     return all_x, all_y, all_theta_local, all_info_lidar
+
 
 if __name__ == '__main__':
-    # env = safety_gymnasium.make('SafetyPointCircle1-v0', render_mode='human')
-
-    # max_action = float(max((env.action_space.high)))
-    # min_action = float(min((env.action_space.low)))
-    # env.reset()
-    # action = env.action_space.sample()
-    # safe_action = select_safe_action(env, action)
-    # print(f'Agent action: {action}, Safe action: {safe_action}')
-    # state, reward, cost, done, truncated, _ = env.step(action)
     
-    # copy_env = copy.deepcopy(env)
-
-    # if hasattr(copy_env, 'render_mode'):
-    #     copy_env.render_parameters.mode = 'None'
-    #     print(copy_env.render_mode)
-    # else:
-    #     print('No render_mode attribute')
-
-    # if hasattr(copy_env.env, 'state'):
-    #     print(copy_env.env.state)
-    # else:
-    #     print('No state attribute')
-
-    # for episode in range(10):
-    #     env.reset()
-    #     for steps in range(250):
-    #         if episode % 2:
-    #             action = [0,0.5]
-    #         else:
-    #             action = [-1,0]
-    #         next_state, reward, cost, done, truncated, info = env.step(action)
-    #         print(info)
         
     env_id = 'SafetyPointCircle1-v0'
-    env = safety_gymnasium.make(env_id)
-    # env = safety_gymnasium.make(env_id, render_mode='human')
+    env = safety_gymnasium.make(env_id, render_mode = 'human')
+    
+    attributes = dir(env)
+    max_lidar_distance = 6
+    lidar_resolution = 16
+    env.reset()
+    error = 0
+    action = [0,1]
+    next_states_list = []
 
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    max_action = env.action_space.high
-    min_action = env.action_space.low
+    for i in range(250):
+        next_state, reward, cost, done, truncated, _ = env.step(action)
+        next_states_list.append(torch.tensor(next_state))
 
-    # print(max_action, min_action)
+    # # Concatenate the list of tensors into a single batch tensor
+    # next_states = torch.stack(next_states_list, dim=0)
+    # print(next_states.shape)
+    # x,y,theta_local,info_lidar = get_coords(next_states, max_lidar_distance, lidar_resolution)
+    #     # if cost > 0:
+    #     #     print('Cost incurred: ', cost)
+    #     #     print(x,y)
+    #     #     break
+    #     # pos = env.task.agent.pos
+    #     # pos = [round(val, 3) for val in pos]
+    #     # # print(pos[0], pos[1])
+    #     # # print(-1*round(x,3), -1*round(y,3))
 
-    low = env.observation_space.low
-    high = env.observation_space.high
-    inf = 1e6
+    #     # error += (abs(pos[0] + x))**2 + (abs(pos[1] + y))**2
+    #     # if done or truncated:
+    #     #     break
+    # # print(error)
+    # # print(x,y)
+    # print(type(x))
+    # print(x.shape)
 
-    for i in range(len(low)):
-        if low[i] <= -inf:
-            low[i] = -1000
-        if high[i] >= inf:
-            high[i] = 1000
-    # Generate 10 random states with a uniform distribution
-    random_states_uniform = generate_random_states_uniform(env, low, high, num_samples=10000)
-    # for state in random_states_uniform:
-        # print(state)
+    # low = env.observation_space.low
+    # low = [round(val, 3) for val in low]
+    # low = np.clip(low, -100,100)
+    # high = env.observation_space.high
+    # high = [round(val, 3) for val in high]
+    # high = np.clip(high, -100,100)
+    # print(low)
+    # print(high)
+        
 
-
-
-
+    
