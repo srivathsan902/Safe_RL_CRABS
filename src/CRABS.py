@@ -14,7 +14,7 @@ from models import Policy, Critic, BarrierCertificate, TransitionDynamics
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class CRABS:
-    def __init__(self, state_dim, action_dim, min_action, max_action, hidden_size_1, hidden_size_2):
+    def __init__(self, state_dim, min_obs, max_obs, action_dim, min_action, max_action, hidden_size_1, hidden_size_2):
 
         """Define the two Policy Networks"""
         self.policy = Policy(state_dim, action_dim, hidden_size_1, hidden_size_2).to(device)
@@ -47,6 +47,9 @@ class CRABS:
         """Environment parameters"""
         self.min_action = np.array(min_action)      # Minimum action value
         self.max_action = np.array(max_action)      # Maximum action value
+
+        self.min_obs = torch.tensor(min_obs)
+        self.max_obs = torch.tensor(max_obs)
         
         """Miscellaneous variables"""
         self.cnt = 0                                # Counter for updating the target networks
@@ -63,10 +66,18 @@ class CRABS:
         given by a calibrated dynamics model is certified safe by 
         the current barrier certificate.
         """
-        num_samples = 500
-        
+        num_samples = 5
+        # print('State: ', state.shape)
+        # print('Action: ', action.shape)
         dist = self.dynamics(state, action)
+        # print('Dist: ', dist)
         possible_next_states = dist.sample((num_samples,))
+        # print('Possible next states: ', possible_next_states.shape)
+        possible_next_states = torch.tanh(possible_next_states)*0.5*(self.max_obs - self.min_obs) + 0.5*(self.max_obs + self.min_obs)
+        possible_next_states = possible_next_states.float()
+        # print(possible_next_states.shape)
+        # possible_next_states = torch.clamp(possible_next_states, self.min_obs, self.max_obs).float()
+        # print(possible_next_states.shape)
         certificate_values = self.barrier_certificate(possible_next_states)
         
         """
@@ -89,7 +100,7 @@ class CRABS:
         return -1*max_certificate_value
 
 
-    def select_action(self, state: np.ndarray, exploration_noise = True):
+    def select_action(self, state: np.ndarray, exploration_noise = True, debug = False):
         """
         Get the next action given the current state
         """
@@ -97,23 +108,30 @@ class CRABS:
 
         state = torch.Tensor(state).to(device)
         action = self.policy(state).detach().cpu().numpy()
-        
+    
+        if debug:
+            print('State in select action: ', state.shape)
+            print('Action in select action: ', action.shape)
+
         if len(state.shape) == 1:
             if exploration_noise:
                 cnt = 0
                 while cnt < 100:
                     cnt += 1
-                    noisy_action = action + [np.random.normal(0,0.1),min(1, np.random.normal(1,0.1))] #0.1*np.random.normal(0, 0.1)]
-                    print(noisy_action)
+                    noisy_action = action + [np.clip(np.random.normal(0,0.25), -1, 1),np.clip(np.random.normal(0,0.25),-1, 1)]
+                    # print(noisy_action)
                     # noisy_action = action + np.random.normal(0, 0.1, size=action.shape)
                     # noisy_action = action + 0.1*self.ou_noise.noise()
                     is_action_safe = self.U(state, noisy_action)
 
                     if is_action_safe <= 0 :
+                        if debug:
+                            print('State in select action: ', state.shape)
+                            print('Noisy Action in select action: ', noisy_action.shape)
                         # print(noisy_action)
                         return noisy_action
-                else:
-                    return action
+
+                return action
             else:
                 return action
 
@@ -124,13 +142,25 @@ class CRABS:
                 
                 while cnt < 100:
                     cnt += 1
-                    noisy_action = np.where(mask[:, None], action, action + [np.random.normal(0,0.1), min(1,np.random.normal(1, 0.1))])
+                    noisy_action = np.where(mask[:, None], action, action + [np.clip(np.random.normal(0,0.1), -1, 1),np.clip(np.random.normal(0,1),-1, 1)])
                     # noisy_action = np.where(mask[:, None], action, action + 0.1*self.ou_noise.noise())
-                    is_action_safe = self.U(state, noisy_action)
+                    if debug:
+                        print('Noisy Action in select action line 147: ', noisy_action.shape)
+                    is_action_safe = self.U(state, noisy_action).squeeze(1)
+                    if debug:
+                        print('is_action_safe dimension: ', is_action_safe.shape)
                     mask = is_action_safe <= 0
                     
                     if mask.all():
+                        if debug:
+                            print('State in select action: ', state.shape)
+                            print('Noisy Action in select action: ', noisy_action.shape)
+                        # print(noisy_action)
                         return noisy_action
+                if debug:
+                    print('State in select action: ', state.shape)
+                    print('Noisy Action in select action: ', noisy_action.shape)
+                # print(noisy_action)
                 return noisy_action
             else:
                 return action
@@ -192,9 +222,9 @@ class CRABS:
         num_samples = 10
         for i in range(num_samples):
             if U_values is None:
-                U_values = self.U(next_states, self.select_action(next_states, exploration_noise = True))
+                U_values = self.U(next_states, self.select_action(next_states, exploration_noise = True, debug=False))
             else:
-                U_values = U_values + self.U(next_states, self.select_action(next_states, exploration_noise = True))
+                U_values = U_values + self.U(next_states, self.select_action(next_states, exploration_noise = True, debug=False))
         
         U_values = U_values / num_samples
         take_transition = (U_values <= 0).squeeze(1)
@@ -224,7 +254,7 @@ class CRABS:
 
         # MALA adversarial Training for Policy is not implemented yet
 
-
+        
 
 
 

@@ -123,7 +123,7 @@ if __name__ == '__main__':
     lidar_resolution = 16
     env.reset()
     error = 0
-    action = [0,1]
+    action = [0,0.5]
     next_states_list = []
 
     for i in range(250):

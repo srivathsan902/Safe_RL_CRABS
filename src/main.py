@@ -31,10 +31,16 @@ def main(dir_name, params):
     max_action = env.action_space.high
     min_action = env.action_space.low
 
+    low = env.observation_space.low
+    high = env.observation_space.high
+
+    low = np.clip(low, -6, 6)
+    high = np.clip(high, -6, 6)
+
     hidden_size_1 = params['main']['agent'].get('hidden_size_1', 64)
     hidden_size_2 = params['main'].get('hidden_size_2', 128)
 
-    agent = CRABS(state_dim, action_dim, min_action, max_action, hidden_size_1 = hidden_size_1, hidden_size_2 = hidden_size_2)
+    agent = CRABS(state_dim, low, high, action_dim, min_action, max_action, hidden_size_1 = hidden_size_1, hidden_size_2 = hidden_size_2)
 
     wandb_enabled = params['base']['wandb_enabled']
 

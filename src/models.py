@@ -104,6 +104,19 @@ class ProbabilisticTransitionDynamics(BaseModel):
 
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
+    def set_env_specs(self, env_specs: dict):
+        """
+        env_specs: dict
+        Keys:
+        - initial_state: np.ndarray
+        - state_space_low: np.ndarray
+        - state_space_high: np.ndarray
+        """
+        self.env_specs = env_specs
+        self.env_specs['initial_state'] = torch.FloatTensor(self.env_specs['initial_state'])
+        self.env_specs['state_space_high'] = torch.tensor(self.env_specs['state_space_high']).float()
+        self.env_specs['state_space_low'] = torch.tensor(self.env_specs['state_space_low']).float()
+
     # @print_args_decorator
     def forward(self, state : torch.FloatTensor, action : np.ndarray):
         dim = 1
@@ -114,7 +127,7 @@ class ProbabilisticTransitionDynamics(BaseModel):
         x = torch.tanh(self.layer_2(x))
 
         mean = self.mean(x)
-        mean = 20*torch.tanh(mean)
+        mean = torch.tanh(mean)*(self.env_specs['state_space_high'] - self.env_specs['state_space_low'])/4 + (self.env_specs['state_space_high'] + self.env_specs['state_space_low'])/2
         log_std = self.log_std(x)
         # print('max_log_std: ', self.max_log_std, 'min_log_std: ', self.min_log_std)
         # print('log_std: ', log_std)
@@ -140,11 +153,12 @@ class BarrierCertificate(BaseModel):
         self.optimizer = optim.Adam(self.parameters(), lr=0.001)
 
 
-        self.m = 500                      # Number of samples to find the adversarial state
+        self.m = 500                        # Number of samples to find the adversarial state
         self.prev_network = None
         self.lambd = 0.01                   # Regularization parameter
         self.mala_temperature = 0.1         # Temperature for the Metropolis Adjusted Langevin Algorithm
         self.mala_step_size = 0.01          # Step size for the Metropolis Adjusted Langevin Algorithm
+        self.pos = None
 
     def set_env_specs(self, env_specs: dict):
         """
@@ -198,6 +212,7 @@ class BarrierCertificate(BaseModel):
         
         if len(x.shape) == 2:
             x = x.squeeze()
+        
         x = x - self.is_state_safe(state, self.pos)
 
         
@@ -319,6 +334,9 @@ class TransitionDynamics(BaseModel):
                     nn.init.xavier_normal_(param, seed)
                 else:
                     nn.init.constant_(param, 0)
+    def set_env_specs(self, env_specs: dict):
+        for model in self.models:
+            model.set_env_specs(env_specs)
         
     # @print_args_decorator
     def forward(self, state : torch.FloatTensor, action : np.ndarray):

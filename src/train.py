@@ -23,6 +23,7 @@ def train(env, agent, dir_name, params, start_episode = 0):
         high = np.clip(high, -6, 6)
         env_specs = {'initial_state' : state, 'state_space_low': low, 'state_space_high': high}
         agent.barrier_certificate.set_env_specs(env_specs)
+        agent.dynamics.set_env_specs(env_specs)
         agent.ou_noise.reset()
         episode_reward = 0
         episode_cost = 0
