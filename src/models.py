@@ -9,6 +9,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from safeStates import isStateSafe
 from utils import print_args_decorator
 
+from function_timer import time_computing
+
+import concurrent.futures
+
 '''
 What are the models required?
 1. Actor to learn the policy
@@ -140,10 +144,266 @@ class ProbabilisticTransitionDynamics(BaseModel):
         # print(std)
         return torch.distributions.Normal(mean, std)
 
+class MALA(nn.Module):
+    def __init__(self, mala_temperature, mala_step_size):
+        super(MALA, self).__init__()
+        self.mala_temperature = mala_temperature
+        self.mala_step_size = mala_step_size
 
-class BarrierCertificate(BaseModel):
-    def __init__(self, state_dim, hidden_size_1, hidden_size_2):
-        super(BarrierCertificate, self).__init__()
+    def step(self, states, U, policy):
+        if not states.requires_grad:
+            states.requires_grad_(True)
+
+        state_certificates = self(states)
+        indicator_state = (state_certificates >= 0).float()
+
+        log_prob_a = self.mala_temperature * (U(states, policy(states)).squeeze() - indicator_state)
+        grad_a = torch.autograd.grad(log_prob_a.sum(), states, allow_unused=True, create_graph=True)[0]
+        if grad_a is None:
+            grad_a = torch.zeros_like(states)
+
+        x_prime = states + self.mala_step_size * grad_a + torch.randn_like(states) * (2 * self.mala_step_size) ** 0.5
+
+        proposed_state_certificates = self(x_prime)
+        indicator_proposed_state = (proposed_state_certificates >= 0).float()
+
+        log_prob_b = self.mala_temperature * (U(x_prime, policy(x_prime)).squeeze() - indicator_proposed_state)
+        grad_b = torch.autograd.grad(log_prob_b.sum(), x_prime, allow_unused=True, create_graph=True)[0]
+        if grad_b is None:
+            grad_b = torch.zeros_like(x_prime)
+
+        proposal_correction_ratio = torch.norm((states - x_prime) * (grad_b - grad_a) / 2, dim=1)
+
+        acceptance_ratio = torch.exp(self.mala_temperature * (log_prob_b - log_prob_a + proposal_correction_ratio))
+
+        mask = (torch.rand_like(acceptance_ratio) < acceptance_ratio).unsqueeze(1)
+
+        states = torch.where(mask, x_prime, states)
+
+        return states
+    
+
+# class BarrierCertificate(BaseModel):
+#     def __init__(self, state_dim, hidden_size_1, hidden_size_2):
+#         super(BarrierCertificate, self).__init__()
+#         self.hidden_size_1 = hidden_size_1
+#         self.hidden_size_2 = hidden_size_2
+#         self.layer1 = nn.Linear(state_dim, hidden_size_1)
+#         self.layer2 = nn.Linear(hidden_size_1, hidden_size_2)
+#         self.layer3 = nn.Linear(hidden_size_2, 1)
+
+#         self.optimizer = optim.Adam(self.parameters(), lr=0.001)
+
+
+#         self.m = 500                        # Number of samples to find the adversarial state
+#         self.prev_network = None
+#         self.lambd = 0.01                   # Regularization parameter
+#         self.mala_temperature = 0.1         # Temperature for the Metropolis Adjusted Langevin Algorithm
+#         self.mala_step_size = 0.01          # Step size for the Metropolis Adjusted Langevin Algorithm
+#         self.pos = None
+
+#     def set_env_specs(self, env_specs: dict):
+#         """
+#         env_specs: dict
+#         Keys:
+#         - initial_state: np.ndarray
+#         - state_space_low: np.ndarray
+#         - state_space_high: np.ndarray
+#         """
+#         self.env_specs = env_specs
+#         self.env_specs['initial_state'] = torch.FloatTensor(self.env_specs['initial_state'])
+#         self.env_specs['state_space_high'] = torch.tensor(self.env_specs['state_space_high']).float()
+#         self.env_specs['state_space_low'] = torch.tensor(self.env_specs['state_space_low']).float()
+    
+#     def set_dynamics_model(self, dynamics_model):
+#         self.dynamics_model = dynamics_model
+    
+#     def set_policy(self, policy):
+#         self.policy = policy
+    
+#     def set_U(self, U):
+#         self.U = U
+    
+#     def set_prev_network(self):
+#         self.prev_network = copy.deepcopy(self)
+    
+#     def current_pos(self, pos):
+#         self.pos = pos
+
+#     def is_state_safe(self, state, pos):
+#         # if abs(pos[0]) <= 1:
+#         #     return 0.05
+#         # else:
+#         #     return 1.05
+#         return isStateSafe(state)
+    
+#     # @time_computing
+#     def forward(self, state):
+        
+#         x = torch.relu(self.layer1(state))
+#         x = torch.relu(self.layer2(x))
+#         x = torch.sigmoid(self.layer3(x))
+
+#         if self.env_specs is not None:
+#             x0 = torch.relu(self.layer1(self.env_specs['initial_state']))
+#             x0 = torch.relu(self.layer2(x0))
+#             x0 = torch.sigmoid(self.layer3(x0))
+#         else:
+#             raise ValueError("Environment specs not set!")
+        
+#         x = 1 - torch.log(1 + torch.exp(x - x0))
+        
+#         if len(x.shape) == 2:
+#             x = x.squeeze()
+        
+#         x = x - self.is_state_safe(state, self.pos)
+
+        
+#         return x
+#     # @print_args_decorator
+#     def step(self, states: torch.FloatTensor):
+#         """
+#         For each state, use MALA (Metropolis Adjusted Langevin Algorithm)
+#         to move to a new state.
+
+        
+#         state: torch.FloatTensor
+#         """
+#         if not states.requires_grad:
+#             states.requires_grad_(True)
+#         state_certificates = self(states)
+#         indicator_state = (state_certificates >= 0).float()
+        
+#         log_prob_a = self.mala_temperature * (self.U(states, self.policy(states)).squeeze() - indicator_state)
+#         grad_a = torch.autograd.grad(log_prob_a.sum(), states, allow_unused=True, create_graph=True)[0]
+#         if grad_a is None:
+#             grad_a = torch.zeros_like(states)
+
+#         x_prime = states + self.mala_step_size*grad_a + torch.randn_like(states)*(2*self.mala_step_size)**0.5
+
+#         proposed_state_certificates = self(x_prime)
+#         indicator_proposed_state = (proposed_state_certificates >= 0).float()
+
+#         log_prob_b = self.mala_temperature * (self.U(x_prime, self.policy(x_prime)).squeeze() - indicator_proposed_state)
+#         grad_b = torch.autograd.grad(log_prob_b.sum(), x_prime, allow_unused=True, create_graph=True)[0]
+#         if grad_b is None:
+#             grad_b = torch.zeros_like(x_prime)
+
+#         proposal_correction_ratio = torch.norm((states - x_prime)*(grad_b - grad_a) / 2, dim = 1)
+
+#         acceptance_ratio = torch.exp(self.mala_temperature*(log_prob_b - log_prob_a + proposal_correction_ratio))
+
+#         mask = (torch.rand_like(acceptance_ratio) < acceptance_ratio).unsqueeze(1)
+
+#         states = torch.where(mask, x_prime, states)
+
+#         return states
+
+    
+#     def compute_grad(self, states):
+#         """
+#         states: torch.FloatTensor
+#         """
+#         # print('States: ', states.shape)
+#         if not states.requires_grad:
+#             states.requires_grad_(True)
+
+#         # C_loss = self.U(states, self.policy(states)).mean()
+#         U_val = self.U(states, self.policy(states))
+#         h_val = self(states)
+
+#         # print('U_val: ', U_val.shape, 'h_val: ', h_val.shape)
+#         phi = list(self.parameters())
+#         # print('Phi: ', len(phi))
+
+#         grad_U_s = torch.autograd.grad(U_val.sum(), states, allow_unused=True, create_graph=True)[0]
+#         grad_h_s = torch.autograd.grad(h_val.sum(), states, allow_unused=True, create_graph=True)[0]
+
+#         if grad_U_s is None:
+#             grad_U_s = torch.zeros_like(states)
+#         if grad_h_s is None:
+#             grad_h_s = torch.zeros_like(states)
+
+#         # print('grad_U_s: ', grad_U_s.shape, 'grad_h_s: ', grad_h_s.shape)
+#         # Lagrange Multiplier nu_star:
+#         nu_star = torch.zeros(states.shape[0], 1)
+#         for i in range(states.shape[0]):
+#             if h_val[i] == 0:
+#                 nu_star[i] = torch.norm(grad_U_s[i])/torch.norm(grad_h_s[i])
+        
+#         # print('nu_star: ', nu_star.shape)
+
+#         grad_U_phi = torch.autograd.grad(U_val.sum(), phi, allow_unused=True, create_graph=True)
+#         grad_h_phi = torch.autograd.grad(h_val.sum(), phi, allow_unused=True, create_graph=True)
+
+#         grad_C = [u + nu_star.mean()*h if h is not None else u for u, h in zip(grad_U_phi, grad_h_phi)]
+
+#         # print('grad_C: ', len(grad_C))
+#         if self.prev_network is not None:
+#             R_loss = torch.relu(self.prev_network(states) - self(states)).mean()
+#         else:
+#             R_loss = torch.tensor(0.0, requires_grad=True).float()
+        
+#         grad_R = torch.autograd.grad(R_loss, phi, allow_unused=True, create_graph=True)
+
+#         # loss = C_loss + self.lambd * R_loss
+#         # return loss
+#         # grad = grad_C + self.lambd * grad_R
+#         grad = [c + self.lambd * r if r is not None else c for c, r in zip(grad_C, grad_R)]
+#         grad = [g if g is not None else torch.zeros_like(phi[i]) for i, g in enumerate(grad)]
+#         return grad
+
+
+#     def train(self, policy, dynamics, U, max_epochs=100, verbose=True):
+#         self.set_policy(policy)
+#         self.set_dynamics_model(dynamics)
+#         self.set_U(U)
+
+#         """Initialize m candidates from the state space randomly"""
+#         """Ensure that the states are within the state space bounds"""
+#         candidate_states = torch.rand((self.m, self.env_specs['state_space_low'].shape[0]), dtype=torch.float32, requires_grad=True).float()
+#         # candidate_states[-16:] = torch.zeros_like(candidate_states[-16:])
+
+#         """Get 3 indices between 16 and 28"""
+#         # indices = torch.randint(16, 28, (3,))
+#         # candidate_states[indices] = torch.rand((3, self.env_specs['state_space_low'].shape[0]), dtype=torch.float32).float()
+
+#         candidate_states = candidate_states*(self.env_specs['state_space_high'] - self.env_specs['state_space_low']) + self.env_specs['state_space_low']
+
+
+#         # print(candidate_states)
+
+#         for epoch in range(max_epochs):
+#             candidate_states = self.step(candidate_states)
+
+#             mask = self(candidate_states) >= 0
+            
+#             trainable_states = candidate_states[mask]
+
+#             if len(trainable_states) == 0:
+#                 continue
+            
+#             grad = self.compute_grad(trainable_states)
+#             self.optimizer.zero_grad()
+#             # loss.backward()
+
+#             for param, g in zip(self.parameters(), grad):
+#                 if param.grad is None:
+#                     param.grad = g.clone()
+#                 else:
+#                     param.grad += g.clone()
+
+#             self.optimizer.step()
+
+#             if verbose and epoch % 50 == 0:
+#             #     print(f"Epoch {epoch}, Loss: {loss.item()}")
+#                 print('Epoch: ', epoch)
+    
+
+class BarrierCertificate(BaseModel, MALA):
+    def __init__(self, state_dim, hidden_size_1, hidden_size_2, mala_temperature=0.1, mala_step_size=0.01):
+        # BaseModel.__init__(self)
+        MALA.__init__(self, mala_temperature, mala_step_size)
         self.hidden_size_1 = hidden_size_1
         self.hidden_size_2 = hidden_size_2
         self.layer1 = nn.Linear(state_dim, hidden_size_1)
@@ -152,27 +412,17 @@ class BarrierCertificate(BaseModel):
 
         self.optimizer = optim.Adam(self.parameters(), lr=0.001)
 
-
-        self.m = 500                        # Number of samples to find the adversarial state
+        self.m = 500
         self.prev_network = None
-        self.lambd = 0.01                   # Regularization parameter
-        self.mala_temperature = 0.1         # Temperature for the Metropolis Adjusted Langevin Algorithm
-        self.mala_step_size = 0.01          # Step size for the Metropolis Adjusted Langevin Algorithm
+        self.lambd = 0.01
         self.pos = None
 
     def set_env_specs(self, env_specs: dict):
-        """
-        env_specs: dict
-        Keys:
-        - initial_state: np.ndarray
-        - state_space_low: np.ndarray
-        - state_space_high: np.ndarray
-        """
         self.env_specs = env_specs
         self.env_specs['initial_state'] = torch.FloatTensor(self.env_specs['initial_state'])
         self.env_specs['state_space_high'] = torch.tensor(self.env_specs['state_space_high']).float()
         self.env_specs['state_space_low'] = torch.tensor(self.env_specs['state_space_low']).float()
-    
+
     def set_dynamics_model(self, dynamics_model):
         self.dynamics_model = dynamics_model
     
@@ -189,14 +439,9 @@ class BarrierCertificate(BaseModel):
         self.pos = pos
 
     def is_state_safe(self, state, pos):
-        # if abs(pos[0]) <= 1:
-        #     return 0.05
-        # else:
-        #     return 1.05
         return isStateSafe(state)
     
     def forward(self, state):
-        
         x = torch.relu(self.layer1(state))
         x = torch.relu(self.layer2(x))
         x = torch.sigmoid(self.layer3(x))
@@ -215,84 +460,56 @@ class BarrierCertificate(BaseModel):
         
         x = x - self.is_state_safe(state, self.pos)
 
-        
         return x
-    # @print_args_decorator
-    def step(self, states: torch.FloatTensor):
-        """
-        For each state, use MALA (Metropolis Adjusted Langevin Algorithm)
-        to move to a new state.
-
-        
-        state: torch.FloatTensor
-        """
+    
+    def compute_grad(self, states):
         if not states.requires_grad:
             states.requires_grad_(True)
-        state_certificates = self(states)
-        indicator_state = (state_certificates >= 0).float()
-        
-        log_prob_a = self.mala_temperature * (self.U(states, self.policy(states)).squeeze() - indicator_state)
-        grad_a = torch.autograd.grad(log_prob_a.sum(), states, allow_unused=True, create_graph=True)[0]
-        if grad_a is None:
-            grad_a = torch.zeros_like(states)
 
-        x_prime = states + self.mala_step_size*grad_a + torch.randn_like(states)*(2*self.mala_step_size)**0.5
+        U_val = self.U(states, self.policy(states))
+        h_val = self(states)
 
-        proposed_state_certificates = self(x_prime)
-        indicator_proposed_state = (proposed_state_certificates >= 0).float()
+        phi = list(self.parameters())
 
-        log_prob_b = self.mala_temperature * (self.U(x_prime, self.policy(x_prime)).squeeze() - indicator_proposed_state)
-        grad_b = torch.autograd.grad(log_prob_b.sum(), x_prime, allow_unused=True, create_graph=True)[0]
-        if grad_b is None:
-            grad_b = torch.zeros_like(x_prime)
+        grad_U_s = torch.autograd.grad(U_val.sum(), states, allow_unused=True, create_graph=True)[0]
+        grad_h_s = torch.autograd.grad(h_val.sum(), states, allow_unused=True, create_graph=True)[0]
 
-        proposal_correction_ratio = torch.norm((states - x_prime)*(grad_b - grad_a) / 2, dim = 1)
+        if grad_U_s is None:
+            grad_U_s = torch.zeros_like(states)
+        if grad_h_s is None:
+            grad_h_s = torch.zeros_like(states)
 
-        acceptance_ratio = torch.exp(self.mala_temperature*(log_prob_b - log_prob_a + proposal_correction_ratio))
+        nu_star = torch.zeros(states.shape[0], 1)
+        for i in range(states.shape[0]):
+            if h_val[i] == 0:
+                nu_star[i] = torch.norm(grad_U_s[i]) / torch.norm(grad_h_s[i])
 
-        mask = (torch.rand_like(acceptance_ratio) < acceptance_ratio).unsqueeze(1)
+        grad_U_phi = torch.autograd.grad(U_val.sum(), phi, allow_unused=True, create_graph=True)
+        grad_h_phi = torch.autograd.grad(h_val.sum(), phi, allow_unused=True, create_graph=True)
 
-        states = torch.where(mask, x_prime, states)
-
-        return states
-
-    
-    def compute_loss(self, states):
-        """
-        states: torch.FloatTensor
-        """
-
-        C_loss = self.U(states, self.policy(states)).mean()
+        grad_C = [u + nu_star.mean() * h if h is not None else u for u, h in zip(grad_U_phi, grad_h_phi)]
 
         if self.prev_network is not None:
             R_loss = torch.relu(self.prev_network(states) - self(states)).mean()
         else:
-            R_loss = torch.tensor(0)
+            R_loss = torch.tensor(0.0, requires_grad=True).float()
         
-        loss = C_loss + self.lambd * R_loss
-        return loss
-        
+        grad_R = torch.autograd.grad(R_loss, phi, allow_unused=True, create_graph=True)
+
+        grad = [c + self.lambd * r if r is not None else c for c, r in zip(grad_C, grad_R)]
+        grad = [g if g is not None else torch.zeros_like(phi[i]) for i, g in enumerate(grad)]
+        return grad
+
     def train(self, policy, dynamics, U, max_epochs=100, verbose=True):
         self.set_policy(policy)
         self.set_dynamics_model(dynamics)
         self.set_U(U)
 
-        """Initialize m candidates from the state space randomly"""
-        """Ensure that the states are within the state space bounds"""
-        candidate_states = torch.rand((self.m, self.env_specs['state_space_low'].shape[0]), dtype=torch.float32).float()
-        # candidate_states[-16:] = torch.zeros_like(candidate_states[-16:])
-
-        """Get 3 indices between 16 and 28"""
-        # indices = torch.randint(16, 28, (3,))
-        # candidate_states[indices] = torch.rand((3, self.env_specs['state_space_low'].shape[0]), dtype=torch.float32).float()
-
-        candidate_states = candidate_states*(self.env_specs['state_space_high'] - self.env_specs['state_space_low']) + self.env_specs['state_space_low']
-
-
-        # print(candidate_states)
+        candidate_states = torch.rand((self.m, self.env_specs['state_space_low'].shape[0]), dtype=torch.float32, requires_grad=True).float()
+        candidate_states = candidate_states * (self.env_specs['state_space_high'] - self.env_specs['state_space_low']) + self.env_specs['state_space_low']
 
         for epoch in range(max_epochs):
-            candidate_states = self.step(candidate_states)
+            candidate_states = self.step(candidate_states, self.U, self.policy)
 
             mask = self(candidate_states) >= 0
             
@@ -301,15 +518,19 @@ class BarrierCertificate(BaseModel):
             if len(trainable_states) == 0:
                 continue
             
-            loss = self.compute_loss(trainable_states)
+            grad = self.compute_grad(trainable_states)
             self.optimizer.zero_grad()
-            loss.backward()
+
+            for param, g in zip(self.parameters(), grad):
+                if param.grad is None:
+                    param.grad = g.clone()
+                else:
+                    param.grad += g.clone()
+
             self.optimizer.step()
 
-            if verbose and epoch % 2 == 0:
-                print(f"Epoch {epoch}, Loss: {loss.item()}")
-        
-    
+            if verbose and epoch % 50 == 0:
+                print('Epoch: ', epoch)
 
 class TransitionDynamics(BaseModel):
     def __init__(self, state_dim, action_dim, num_models, hidden_size_1, hidden_size_2, learning_rate = 0.001):
@@ -339,31 +560,61 @@ class TransitionDynamics(BaseModel):
             model.set_env_specs(env_specs)
         
     # @print_args_decorator
+    # @time_computing
     def forward(self, state : torch.FloatTensor, action : np.ndarray):
         mean_mean, mean_std = 0, 0
-        for model in self.models:
-            dist = model(state, action)
-            mean_mean += dist.mean
-            mean_std += dist.stddev
+        # for model in self.models:
+        #     dist = model(state, action)
+        #     mean_mean += dist.mean
+        #     mean_std += dist.stddev
         
-        mean_mean /= len(self.models)
-        mean_std /= len(self.models)
+        # mean_mean /= len(self.models)
+        # mean_std /= len(self.models)
+
+        def process_model(model):
+            dist = model(state, action)
+            return dist.mean, dist.stddev
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_model, model) for model in self.models]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        
+        mean_mean = sum(result[0] for result in results) / len(self.models)
+        mean_std = sum(result[1] for result in results) / len(self.models)
 
         return torch.distributions.Normal(mean_mean, mean_std)
     
     # @print_args_decorator
     def compute_loss(self, state, action, next_state):
-        prediction_loss = 0
-        regularization_loss = 0
+        # prediction_loss = 0
+        # regularization_loss = 0
 
-        for model in self.models:
-            dist = model(state, action)
+        # for model in self.models:
+        #     dist = model(state, action)
             
-            prediction_loss += -dist.log_prob(next_state).mean()
-            regularization_loss += torch.norm(model.max_log_std - model.min_log_std)
-        # print('Prediction Loss: ', prediction_loss, 'Regularization Loss: ', regularization_loss)
+        #     prediction_loss += -dist.log_prob(next_state).mean()
+        #     regularization_loss += torch.norm(model.max_log_std - model.min_log_std)
+        # # print('Prediction Loss: ', prediction_loss, 'Regularization Loss: ', regularization_loss)
         
-        loss = (prediction_loss + self.lambd*regularization_loss)/len(self.models)
+        # loss = (prediction_loss + self.lambd*regularization_loss)/len(self.models)
+        # return loss
+
+        def compute_model_loss(model):
+            dist = model(state, action)
+            prediction_loss = -dist.log_prob(next_state).mean()
+            regularization_loss = torch.norm(model.max_log_std - model.min_log_std)
+            return prediction_loss, regularization_loss
+
+        prediction_loss_total, regularization_loss_total = 0, 0
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(compute_model_loss, model) for model in self.models]
+            for future in concurrent.futures.as_completed(futures):
+                prediction_loss, regularization_loss = future.result()
+                prediction_loss_total += prediction_loss
+                regularization_loss_total += regularization_loss
+        
+        loss = (prediction_loss_total + self.lambd * regularization_loss_total) / len(self.models)
         return loss
 
     # @print_args_decorator
@@ -380,6 +631,6 @@ class TransitionDynamics(BaseModel):
                 loss.backward()
                 self.optimizer.step()
 
-            if verbose and epoch % 2 == 0:
+            if verbose and epoch % 50 == 0:
                 print(f"Epoch {epoch}, Loss: {epoch_loss}")
         

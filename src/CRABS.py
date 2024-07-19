@@ -10,6 +10,7 @@ from OUNoise import OUNoise
 from replayBuffer import PERBuffer
 from models import Policy, Critic, BarrierCertificate, TransitionDynamics
 
+from function_timer import time_computing
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -30,7 +31,7 @@ class CRABS:
         self.barrier_certificate = BarrierCertificate(state_dim, hidden_size_1, hidden_size_2).to(device)
 
         """Define the dynamics model"""
-        self.dynamics = TransitionDynamics(state_dim, action_dim, num_models=10, hidden_size_1=256, hidden_size_2=256, learning_rate=1e-3).to(device)
+        self.dynamics = TransitionDynamics(state_dim, action_dim, num_models=4, hidden_size_1=256, hidden_size_2=256, learning_rate=1e-3).to(device)
 
         """Define the Prioritized Experience Replay Buffer"""
         self.replay_buffer = PERBuffer(max_size=1_000_000)
@@ -59,19 +60,20 @@ class CRABS:
         self.C = 1000                               # Large Constant for the policy loss
         
 
-
+    # @time_computing
     def U(self, state : torch.FloatTensor, action: np.ndarray):
         """
         Given a state and an action, check if the resulting state
         given by a calibrated dynamics model is certified safe by 
         the current barrier certificate.
         """
-        num_samples = 5
+        num_samples = 100
         # print('State: ', state.shape)
         # print('Action: ', action.shape)
         dist = self.dynamics(state, action)
         # print('Dist: ', dist)
         possible_next_states = dist.sample((num_samples,))
+        possible_next_states = torch.tensor(possible_next_states, requires_grad=True).to(device)
         # print('Possible next states: ', possible_next_states.shape)
         possible_next_states = torch.tanh(possible_next_states)*0.5*(self.max_obs - self.min_obs) + 0.5*(self.max_obs + self.min_obs)
         possible_next_states = possible_next_states.float()
@@ -129,8 +131,10 @@ class CRABS:
                             print('State in select action: ', state.shape)
                             print('Noisy Action in select action: ', noisy_action.shape)
                         # print(noisy_action)
+                        # print(cnt)
                         return noisy_action
-
+                # if cnt == 100:
+                #     print(cnt)
                 return action
             else:
                 return action
@@ -156,11 +160,14 @@ class CRABS:
                             print('State in select action: ', state.shape)
                             print('Noisy Action in select action: ', noisy_action.shape)
                         # print(noisy_action)
+                        # print(cnt)
                         return noisy_action
                 if debug:
                     print('State in select action: ', state.shape)
                     print('Noisy Action in select action: ', noisy_action.shape)
                 # print(noisy_action)
+                # if cnt == 100:
+                #     print(cnt)
                 return noisy_action
             else:
                 return action
@@ -180,7 +187,7 @@ class CRABS:
         costs = torch.FloatTensor(np.array(costs)).to(device).view(-1, 1)
         dones = torch.FloatTensor(np.array(dones)).to(device).view(-1, 1)
 
-        self.dynamics.train(states, actions, next_states, max_epochs=10, batch_size=64, shuffle=True, verbose=True)
+        self.dynamics.train(states, actions, next_states, max_epochs=2, batch_size=64, shuffle=True, verbose=True)
 
 
     def train(self):
@@ -197,16 +204,14 @@ class CRABS:
         costs = torch.FloatTensor(np.array(costs)).to(device).view(-1, 1)
         dones = torch.FloatTensor(np.array(dones)).to(device).view(-1, 1)
 
-        # print('Training the Dynamics model')
-        # self.dynamics.train(states, actions, next_states, max_epochs=10, batch_size=64, shuffle=True, verbose=True)
 
         # self.certificate_cnt = (self.certificate_cnt + 1) % self.UPDATE_CERTIFICATE_INTERVAL
 
         # if self.certificate_cnt == 0:
         #     print('Training the Barrier Certificate')
-        #     self.barrier_certificate.train(self.policy, self.dynamics, self.U, max_epochs=10)
+        #     self.barrier_certificate.train(self.policy, self.dynamics, self.U, max_epochs=100)
 
-        self.barrier_certificate.train(self.policy, self.dynamics, self.U, max_epochs=10)
+        self.barrier_certificate.train(self.policy, self.dynamics, self.U, max_epochs=100)
 
 
         current_Q = self.critic(states, actions).view(-1)

@@ -13,9 +13,9 @@ main:
       hidden_size_2: 128
 
 train:
-  num_episodes: 10
+  num_episodes: 100
   max_steps_per_episode: 250
-  save_every: 250
+  save_every: 500
 
 test:
   models_dir: "artifacts/2024/07/01/Run_1"
